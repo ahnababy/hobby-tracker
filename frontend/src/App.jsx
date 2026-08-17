@@ -11,8 +11,12 @@ import {
   CheckCircle2, 
   Sparkles,
   TrendingUp,
-  RefreshCw
+  RefreshCw,
+  LogOut,
+  UserCheck,
+  Clock
 } from 'lucide-react';
+import AuthModal from './components/AuthModal';
 
 const API_BASE_URL = 'http://127.0.0.1:8000/api';
 
@@ -28,7 +32,7 @@ function formatDate(date) {
 function getStartOfWeek(d) {
   const date = new Date(d);
   const day = date.getDay();
-  const diff = date.getDate() - day + (day === 0 ? -6 : 1); // Adjust when day is Sunday
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
   return new Date(date.setDate(diff));
 }
 
@@ -39,17 +43,36 @@ function addDays(date, days) {
   return result;
 }
 
+// Helper: Format last login date for display
+function formatLastLogin(isoString) {
+  if (!isoString) return 'First session';
+  const d = new Date(isoString);
+  return d.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+}
+
 export default function App() {
+  // Auth state
+  const [token, setToken] = useState(() => localStorage.getItem('token') || '');
+  const [user, setUser] = useState(() => {
+    const saved = localStorage.getItem('user');
+    return saved ? JSON.parse(saved) : null;
+  });
+
   const [currentWeekMonday, setCurrentWeekMonday] = useState(() => getStartOfWeek(new Date()));
   const [habits, setHabits] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [newHabitName, setNewHabitName] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [justToggledCell, setJustToggledCell] = useState(null); // 'habitId-dateStr'
+  const [justToggledCell, setJustToggledCell] = useState(null);
 
   const todayStr = useMemo(() => formatDate(new Date()), []);
 
-  // Compute 7 days of current week (Monday -> Sunday)
   const weekDays = useMemo(() => {
     const days = [];
     const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -69,48 +92,80 @@ export default function App() {
   const startDateStr = weekDays[0].dateStr;
   const endDateStr = weekDays[6].dateStr;
 
-  // Fetch habits and logs for date range
+  // Handle successful authentication
+  const handleAuthSuccess = (newToken, newUser) => {
+    setToken(newToken);
+    setUser(newUser);
+    localStorage.setItem('token', newToken);
+    localStorage.setItem('user', JSON.stringify(newUser));
+  };
+
+  // Logout handler
+  const handleLogout = async () => {
+    if (token) {
+      try {
+        await fetch(`${API_BASE_URL}/logout/`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Token ${token}`
+          }
+        });
+      } catch (err) {
+        console.error('Logout error:', err);
+      }
+    }
+    setToken('');
+    setUser(null);
+    setHabits([]);
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+  };
+
+  // Fetch habits for authenticated user
   const loadHabits = async () => {
+    if (!token) return;
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/habits/?start_date=${startDateStr}&end_date=${endDateStr}`);
+      const res = await fetch(`${API_BASE_URL}/habits/?start_date=${startDateStr}&end_date=${endDateStr}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Token ${token}`
+        }
+      });
+      if (res.status === 401) {
+        handleLogout();
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setHabits(data);
-      } else {
-        console.error('Failed to fetch habits');
       }
     } catch (err) {
-      console.error('Error connecting to backend API:', err);
+      console.error('Error fetching habits:', err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadHabits();
-  }, [startDateStr, endDateStr]);
+    if (token) {
+      loadHabits();
+    }
+  }, [token, startDateStr, endDateStr]);
 
-  // Week Navigation handlers
-  const handlePrevWeek = () => {
-    setCurrentWeekMonday((prev) => addDays(prev, -7));
-  };
-
-  const handleNextWeek = () => {
-    setCurrentWeekMonday((prev) => addDays(prev, 7));
-  };
-
-  const handleToday = () => {
-    setCurrentWeekMonday(getStartOfWeek(new Date()));
-  };
+  const handlePrevWeek = () => setCurrentWeekMonday((prev) => addDays(prev, -7));
+  const handleNextWeek = () => setCurrentWeekMonday((prev) => addDays(prev, 7));
+  const handleToday = () => setCurrentWeekMonday(getStartOfWeek(new Date()));
 
   // Toggle log status via API
   const handleToggleLog = async (habitId, dateStr) => {
+    if (!token) return;
     const cellKey = `${habitId}-${dateStr}`;
     setJustToggledCell(cellKey);
     setTimeout(() => setJustToggledCell(null), 300);
 
-    // Optimistic UI Update
+    // Optimistic local update
     setHabits((prevHabits) =>
       prevHabits.map((habit) => {
         if (habit.id !== habitId) return habit;
@@ -131,16 +186,17 @@ export default function App() {
     try {
       const response = await fetch(`${API_BASE_URL}/habits/toggle-log/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Token ${token}`
+        },
         body: JSON.stringify({ habit_id: habitId, date: dateStr }),
       });
 
       if (!response.ok) {
-        // Revert on error
         loadHabits();
       } else {
         const updatedLog = await response.json();
-        // Sync with API response
         setHabits((prevHabits) =>
           prevHabits.map((h) => {
             if (h.id !== habitId) return h;
@@ -155,16 +211,19 @@ export default function App() {
     }
   };
 
-  // Add new habit
+  // Add habit
   const handleAddHabit = async (e) => {
     e.preventDefault();
-    if (!newHabitName.trim()) return;
+    if (!newHabitName.trim() || !token) return;
 
     setIsSubmitting(true);
     try {
       const response = await fetch(`${API_BASE_URL}/habits/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Token ${token}`
+        },
         body: JSON.stringify({ name: newHabitName.trim() }),
       });
 
@@ -181,14 +240,15 @@ export default function App() {
 
   // Delete habit
   const handleDeleteHabit = async (habitId, name) => {
-    if (!window.confirm(`Are you sure you want to delete "${name}"?`)) return;
+    if (!window.confirm(`Delete habit "${name}"?`)) return;
 
-    // Optimistic removal
     setHabits((prev) => prev.filter((h) => h.id !== habitId));
-
     try {
       await fetch(`${API_BASE_URL}/habits/${habitId}/`, {
         method: 'DELETE',
+        headers: {
+          'Authorization': `Token ${token}`
+        }
       });
     } catch (err) {
       console.error('Error deleting habit:', err);
@@ -196,13 +256,11 @@ export default function App() {
     }
   };
 
-  // Helper check if habit is done on date
   const isHabitDone = (habit, dateStr) => {
     const log = habit.logs.find((l) => l.date === dateStr);
     return log ? log.is_done : false;
   };
 
-  // Summary Metrics calculations
   const stats = useMemo(() => {
     if (habits.length === 0) return { todayPct: 0, totalHabits: 0, bestStreak: 0, weeklyDoneCount: 0 };
 
@@ -229,11 +287,16 @@ export default function App() {
     };
   }, [habits, todayStr, weekDays]);
 
+  // Show Auth Modal if not authenticated
+  if (!token) {
+    return <AuthModal onAuthSuccess={handleAuthSuccess} />;
+  }
+
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '32px 20px' }}>
       
-      {/* HEADER BAR */}
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+      {/* TOP USER PROFILE & HEADER BAR */}
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', flexWrap: 'wrap', gap: '16px' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <div style={{ background: 'linear-gradient(135deg, #6366f1, #10b981)', padding: '10px', borderRadius: '14px', display: 'flex' }}>
@@ -244,55 +307,92 @@ export default function App() {
             </h1>
           </div>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', marginTop: '4px' }}>
-            Build consistency, one checkmark at a time.
+            Welcome back, <strong style={{ color: '#818cf8' }}>{user?.username}</strong>!
           </p>
         </div>
 
-        {/* WEEK NAVIGATION */}
-        <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}>
-          <button 
-            onClick={handlePrevWeek} 
-            title="Previous Week"
-            style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', padding: '6px', borderRadius: '8px', display: 'flex', transition: 'background 0.2s' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-          >
-            <ChevronLeft size={20} />
-          </button>
+        {/* Right Header Controls: Last Login Memory & Navigation */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+          
+          {/* User Badge & Last Login Memory */}
+          <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '8px 16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#10b981', fontSize: '0.85rem', fontWeight: 600 }}>
+              <UserCheck size={16} />
+              {user?.username}
+            </div>
+            
+            <div style={{ height: '16px', width: '1px', background: 'var(--border-color)' }}></div>
 
-          <button 
-            onClick={handleToday}
-            style={{ 
-              background: 'rgba(99, 102, 241, 0.2)', 
-              border: '1px solid rgba(99, 102, 241, 0.4)', 
-              color: '#818cf8', 
-              padding: '6px 12px', 
-              borderRadius: '8px', 
-              fontSize: '0.85rem', 
-              fontWeight: 600,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px'
-            }}
-          >
-            <Calendar size={14} />
-            Today
-          </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-muted)', fontSize: '0.8rem' }} title="Memory of Last Login">
+              <Clock size={14} color="#818cf8" />
+              <span>Last login: <strong style={{ color: '#e2e8f0' }}>{formatLastLogin(user?.last_login)}</strong></span>
+            </div>
 
-          <span style={{ fontSize: '0.9rem', fontWeight: 600, padding: '0 8px', color: '#e2e8f0' }}>
-            {weekDays[0].formattedShort} – {weekDays[6].formattedShort}
-          </span>
+            <button
+              onClick={handleLogout}
+              title="Sign Out"
+              style={{
+                background: 'rgba(239, 68, 68, 0.15)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: '#f87171',
+                padding: '4px 10px',
+                borderRadius: '8px',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                marginLeft: '6px'
+              }}
+            >
+              <LogOut size={12} />
+              Logout
+            </button>
+          </div>
 
-          <button 
-            onClick={handleNextWeek}
-            title="Next Week"
-            style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', padding: '6px', borderRadius: '8px', display: 'flex', transition: 'background 0.2s' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-          >
-            <ChevronRight size={20} />
-          </button>
+          {/* Week Navigation */}
+          <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}>
+            <button 
+              onClick={handlePrevWeek} 
+              title="Previous Week"
+              style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', padding: '6px', borderRadius: '8px', display: 'flex' }}
+            >
+              <ChevronLeft size={20} />
+            </button>
+
+            <button 
+              onClick={handleToday}
+              style={{ 
+                background: 'rgba(99, 102, 241, 0.2)', 
+                border: '1px solid rgba(99, 102, 241, 0.4)', 
+                color: '#818cf8', 
+                padding: '6px 12px', 
+                borderRadius: '8px', 
+                fontSize: '0.85rem', 
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}
+            >
+              <Calendar size={14} />
+              Today
+            </button>
+
+            <span style={{ fontSize: '0.9rem', fontWeight: 600, padding: '0 8px', color: '#e2e8f0' }}>
+              {weekDays[0].formattedShort} – {weekDays[6].formattedShort}
+            </span>
+
+            <button 
+              onClick={handleNextWeek}
+              title="Next Week"
+              style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', padding: '6px', borderRadius: '8px', display: 'flex' }}
+            >
+              <ChevronRight size={20} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -372,7 +472,9 @@ export default function App() {
         
         {/* Table Header Controls */}
         <div style={{ padding: '16px 20px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2 style={{ fontSize: '1.2rem', fontWeight: 700 }}>Habits Tracker</h2>
+          <h2 style={{ fontSize: '1.2rem', fontWeight: 700 }}>
+            {user?.username}'s Habit Dashboard
+          </h2>
           <button 
             onClick={loadHabits}
             title="Refresh API Data"
@@ -409,7 +511,7 @@ export default function App() {
               {habits.length === 0 ? (
                 <tr>
                   <td colSpan={10} style={{ padding: '40px 20px', color: 'var(--text-muted)' }}>
-                    No habits found. Add a habit below to get started!
+                    No habits found for {user?.username}. Add your first habit below!
                   </td>
                 </tr>
               ) : (
@@ -501,11 +603,8 @@ export default function App() {
               padding: '12px 16px',
               color: '#fff',
               fontSize: '0.95rem',
-              outline: 'none',
-              transition: 'border-color 0.2s',
+              outline: 'none'
             }}
-            onFocus={(e) => e.target.style.borderColor = 'var(--accent-primary)'}
-            onBlur={(e) => e.target.style.borderColor = 'var(--border-color)'}
           />
           <button
             type="submit"
@@ -523,7 +622,6 @@ export default function App() {
               display: 'flex',
               alignItems: 'center',
               gap: '8px',
-              transition: 'transform 0.2s, box-shadow 0.2s',
               boxShadow: '0 4px 14px rgba(99, 102, 241, 0.4)',
             }}
           >

@@ -1,6 +1,27 @@
 import datetime
+from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import Habit, HabitLog
+
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'last_login']
+
+class RegisterSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=4)
+
+    class Meta:
+        model = User
+        fields = ['username', 'email', 'password']
+
+    def create(self, validated_data):
+        user = User.objects.create_user(
+            username=validated_data['username'],
+            email=validated_data.get('email', ''),
+            password=validated_data['password']
+        )
+        return user
 
 class HabitLogSerializer(serializers.ModelSerializer):
     class Meta:
@@ -10,11 +31,12 @@ class HabitLogSerializer(serializers.ModelSerializer):
 class HabitSerializer(serializers.ModelSerializer):
     logs = serializers.SerializerMethodField()
     streak = serializers.SerializerMethodField()
+    owner_username = serializers.ReadOnlyField(source='owner.username')
 
     class Meta:
         model = Habit
-        fields = ['id', 'name', 'owner', 'created_at', 'logs', 'streak']
-        read_only_fields = ['id', 'created_at', 'logs', 'streak']
+        fields = ['id', 'name', 'owner', 'owner_username', 'created_at', 'logs', 'streak']
+        read_only_fields = ['id', 'owner', 'owner_username', 'created_at', 'logs', 'streak']
 
     def get_logs(self, obj):
         request = self.context.get('request')
